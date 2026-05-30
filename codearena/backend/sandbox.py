@@ -13,7 +13,7 @@ Production should use Docker --network=none + seccomp + cgroup v2.
 
 import asyncio
 import os
-import resource
+import platform
 import shutil
 import subprocess
 import sys
@@ -21,6 +21,12 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+# resource is a Unix-only module; import it conditionally
+if platform.system() != "Windows":
+    import resource
+else:
+    resource = None  # type: ignore
 
 
 @dataclass
@@ -345,7 +351,10 @@ def resolve_lang(lang: str) -> str | None:
 # ── Resource limits ───────────────────────────────────────────────────────────
 
 def _set_resource_limits():
-    """CPU time limit. Wall-clock timeout handled by asyncio.wait_for()."""
+    """CPU time limit. Wall-clock timeout handled by asyncio.wait_for().
+    No-op on Windows — asyncio timeout is the only guard there."""
+    if resource is None:
+        return
     resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT_SECONDS, TIMEOUT_SECONDS))
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
@@ -439,11 +448,13 @@ async def execute_code(code: str, language: str = "python") -> ExecutionResult:
         ]
 
         try:
+            # preexec_fn is Unix-only; on Windows resource limits are skipped
+            _preexec = _set_resource_limits if platform.system() != "Windows" else None
             proc = await asyncio.create_subprocess_exec(
                 *run_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                preexec_fn=_set_resource_limits,
+                preexec_fn=_preexec,
                 cwd=tmpdir,
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
             )
